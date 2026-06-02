@@ -1,0 +1,28 @@
+# ============================================================================
+# OBD-II Scanner v8 (Qt5 / qmake) — .gitignore
+# ============================================================================
+
+# --- Directorios de compilación ---
+obj/
+bin/
+moc/
+ui/
+obj/
+screenshots/
+
+
+# --- Logs de sesión (generados en tiempo de ejecución) ---
+logs/
+
+# --- Editor / OS ---
+*~
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- qmake (NO ignorar el Makefile raíz — es generado por qmake pero se trackea) ---
+.qmake.stash
+
+# --- Archivos de dependencias generados por compilador ---
+*.d
