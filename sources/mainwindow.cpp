@@ -98,6 +98,16 @@ void MainWindow::createWidgets() {
     setCentralWidget(m_tabs);
 }
 
+void MainWindow::closeApplication() {
+    // Cerrar conexión Bluetooth antes de salir
+    if (m_elm && m_elm->isConnected()) {
+        m_elm->disconnect();
+    }
+    m_pollTimer->stop();
+    saveSettings();
+    close();
+}
+
 void MainWindow::createToolBar() {
     QToolBar* toolbar = addToolBar("Principal");
     toolbar->setStyleSheet(
@@ -158,6 +168,15 @@ void MainWindow::createToolBar() {
     m_actDemo = toolbar->addAction(AppIcons::iconDemo(false), " Demo");
     m_actDemo->setToolTip("Activar modo demo con datos simulados (sin ELM327)");
     m_actDemo->setCheckable(true);
+
+    toolbar->addSeparator();
+
+    QAction* actExit = toolbar->addAction("✕");
+    actExit->setText(" Salir");
+    actExit->setToolTip("Cerrar aplicación y liberar recursos Bluetooth");
+    // Nota: QAction no soporta setStyleSheet. El color del botón Salir
+    // se hereda del QToolBar::QToolButton:disabled hover style en createToolBar().
+    connect(actExit, &QAction::triggered, this, &MainWindow::closeApplication);
 }
 
 void MainWindow::createStatusBar() {
@@ -208,6 +227,12 @@ void MainWindow::connectSignals() {
     connect(m_actReport, &QAction::triggered, this, &MainWindow::onExportReport);
     connect(m_actResetSettings, &QAction::triggered, this, &MainWindow::onResetSettings);
     connect(m_actDemo, &QAction::triggered, this, &MainWindow::onDemo);
+
+    // Close with Ctrl+Q
+    QAction* actQuit = new QAction(this);
+    actQuit->setShortcut(QKeySequence("Ctrl+Q"));
+    connect(actQuit, &QAction::triggered, this, &MainWindow::closeApplication);
+    addAction(actQuit);
 
     // Poll timer
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::onTimerTick);
@@ -532,6 +557,18 @@ void MainWindow::onTimerTick() {
             stft = 12.0 + 5.0 * sin(m_demoCounter * 0.05);   // rich trim trying to compensate
             ltft = 18.0 + 3.0 * sin(m_demoCounter * 0.01);   // long term maxed out
             break;
+        case DemoPhase::FuelPumpFailure:
+            stft = 20.0 + 8.0 * sin(m_demoCounter * 0.07);   // massive positive trim (lean)
+            ltft = 30.0 + 5.0 * sin(m_demoCounter * 0.02);   // LTFT maxed out compensating
+            break;
+        case DemoPhase::SlowO2Sensor:
+            stft = 5.0 + 10.0 * sin(m_demoCounter * 0.008);  // slow wandering trim
+            ltft = 8.0 + 3.0 * sin(m_demoCounter * 0.005);
+            break;
+        case DemoPhase::Overheating:
+            stft = -3.0 + 4.0 * sin(m_demoCounter * 0.04);   // leans out as engine heats
+            ltft = 5.0 + 2.0 * sin(m_demoCounter * 0.01);
+            break;
         case DemoPhase::RalentiIrregular:
             stft = -8.0 + 6.0 * sin(m_demoCounter * 0.1);    // erratic trims
             ltft = -5.0 + 4.0 * sin(m_demoCounter * 0.02);
@@ -553,13 +590,16 @@ void MainWindow::onTimerTick() {
         // Show current phase in protocol label
         QString phaseStr;
         switch (m_demoPhase) {
-        case DemoPhase::Normal:         phaseStr = "DEMO · Normal"; break;
-        case DemoPhase::AccelBrusca:    phaseStr = "⚡ DEMO · Acel. Brusca"; break;
-        case DemoPhase::PostAccel:      phaseStr = "DEMO · Recuperación"; break;
-        case DemoPhase::FallaSensor:    phaseStr = "⚠ DEMO · Falla Sensor"; break;
-        case DemoPhase::Recovery:       phaseStr = "DEMO · Recuperando"; break;
-        case DemoPhase::RalentiIrregular: phaseStr = "🌀 DEMO · Ral. Irregular"; break;
-        case DemoPhase::DTCTrigger:     phaseStr = "🔴 DEMO · DTC Activo"; break;
+        case DemoPhase::Normal:             phaseStr = "DEMO · Normal"; break;
+        case DemoPhase::AccelBrusca:        phaseStr = "⚡ DEMO · Acel. Brusca"; break;
+        case DemoPhase::PostAccel:          phaseStr = "DEMO · Recuperación"; break;
+        case DemoPhase::FallaSensor:        phaseStr = "⚠ DEMO · Falla Sensor"; break;
+        case DemoPhase::FuelPumpFailure:    phaseStr = "💀 DEMO · Fuel Pump Fail"; break;
+        case DemoPhase::SlowO2Sensor:       phaseStr = "⏳ DEMO · Sensor O2 Lento"; break;
+        case DemoPhase::Overheating:        phaseStr = "🔥 DEMO · Sobrecalentamiento"; break;
+        case DemoPhase::Recovery:           phaseStr = "DEMO · Recuperando"; break;
+        case DemoPhase::RalentiIrregular:   phaseStr = "🌀 DEMO · Ral. Irregular"; break;
+        case DemoPhase::DTCTrigger:         phaseStr = "🔴 DEMO · DTC Activo"; break;
         }
         m_lblProtocol->setText(phaseStr);
 
@@ -717,7 +757,8 @@ void MainWindow::onDemo() {
         m_dtcPanel->setDemoVehicleInfo();
 
         appendLog("🎮 Demo avanzado activado", QColor(255, 180, 40));
-        appendLog("📊 Escenarios: Normal • Acel. Brusca • Falla Sensor • Ral. Irregular • DTC", QColor(180, 190, 210));
+        appendLog("📊 Escenarios: Normal • Acel.Brusca • FallaSensor • FuelPump • SlowO2 "
+                  "• Overheat • Ral.Irreg • DTC", QColor(180, 190, 210));
         appendLog("💡 DTCs visibles en pestaña Diagnóstico · CHECK ENGINE en barra de estado", QColor(140, 145, 160));
     } else {
         // Stop demo mode
@@ -801,6 +842,30 @@ void MainWindow::advanceDemoPhase() {
         appendLog("✅ Sensores normalizados", QColor(100, 255, 100));
         break;
 
+    case DemoPhase::FuelPumpFailure:
+        m_demoPhase = DemoPhase::Recovery;
+        m_demoPhaseDuration = 15 + rand() % 10;
+        appendLog("🔧 Presión combustible restaurada — mezcla normalizando", QColor(100, 200, 255));
+        break;
+
+    case DemoPhase::SlowO2Sensor:
+        m_demoPhase = DemoPhase::Normal;
+        m_demoPhaseDuration = 50 + rand() % 30;
+        appendLog("✅ Sensor O2 reemplazado — conmutación normal", QColor(100, 255, 100));
+        // Clear MIL after O2 fix
+        if (m_demoCheckEngine) {
+            m_demoCheckEngine = false;
+            m_demoDTCs.clear();
+        }
+        break;
+
+    case DemoPhase::Overheating:
+        m_demoPhase = DemoPhase::Recovery;
+        m_demoPhaseDuration = 25 + rand() % 15;
+        appendLog("🛑 Motor enfriado — revisar nivel refrigerante y termostato", QColor(255, 120, 60));
+        m_demoCheckEngine = true; // keep MIL after overheat event
+        break;
+
     case DemoPhase::RalentiIrregular:
         m_demoPhase = DemoPhase::Normal;
         m_demoPhaseDuration = 40 + rand() % 30;
@@ -830,6 +895,38 @@ void MainWindow::advanceDemoPhase() {
         }
     }
 
+    // Occasionally trigger FuelPumpFailure when in normal phase
+    if (m_demoPhase == DemoPhase::Normal && rand() % 12 < 1) {
+        m_demoPhase = DemoPhase::FuelPumpFailure;
+        m_demoPhaseDuration = 25 + rand() % 15;
+        appendLog("💀 FALLA BOMBA COMBUSTIBLE — Presión de combustible baja!", QColor(255, 60, 60));
+        triggerDemoDTC();
+    }
+
+    // Occasionally trigger SlowO2Sensor when in normal phase or post-recovery
+    if ((m_demoPhase == DemoPhase::Normal) && rand() % 14 < 1) {
+        m_demoPhase = DemoPhase::SlowO2Sensor;
+        m_demoPhaseDuration = 30 + rand() % 20;
+        appendLog("⏳ SENSOR O2 LENTO — Respuesta retardada, mezcla incorrecta", QColor(255, 180, 40));
+        triggerDemoDTC();
+        if (!m_demoCheckEngine) {
+            m_demoCheckEngine = true;
+        }
+    }
+
+    // Occasionally trigger Overheating (rare, very dramatic)
+    if (m_demoPhase == DemoPhase::Normal && rand() % 30 < 1) {
+        m_demoPhase = DemoPhase::Overheating;
+        m_demoPhaseDuration = 35 + rand() % 15;
+        appendLog("🔥 SOBRECALENTAMIENTO — Temperatura del motor crítica!", QColor(255, 30, 30));
+        appendLog("   Verificar: nivel refrigerante, termostato, ventilador", QColor(255, 150, 100));
+        triggerDemoDTC();
+        triggerDemoDTC();
+        if (!m_demoCheckEngine) {
+            m_demoCheckEngine = true;
+        }
+    }
+
     // Occasionally trigger DTCs (multi-code event)
     if (m_demoPhase == DemoPhase::Normal && !m_demoCheckEngine && rand() % 15 < 1) {
         m_demoPhase = DemoPhase::DTCTrigger;
@@ -847,28 +944,65 @@ void MainWindow::advanceDemoPhase() {
 
 bool MainWindow::demoFaultActive() {
     return m_demoPhase == DemoPhase::FallaSensor ||
-           m_demoPhase == DemoPhase::RalentiIrregular;
+           m_demoPhase == DemoPhase::RalentiIrregular ||
+           m_demoPhase == DemoPhase::FuelPumpFailure ||
+           m_demoPhase == DemoPhase::Overheating;
 }
 
 void MainWindow::triggerDemoDTC() {
     // Add a single DTC related to the current fault
-    std::vector<DTCCode> allDTCs = {
-        {"P0101", "Rango/rendimiento del circuito MAF"},
-        {"P0102", "Entrada baja del circuito MAF"},
-        {"P0171", "Mezcla pobre (banco 1)"},
-        {"P0174", "Mezcla pobre (banco 2)"},
-        {"P0300", "Fallo de encendido aleatorio/múltiples cilindros"},
-        {"P0301", "Fallo de encendido cilindro 1"},
-        {"P0302", "Fallo de encendido cilindro 2"},
-        {"P0303", "Fallo de encendido cilindro 3"},
-        {"P0304", "Fallo de encendido cilindro 4"},
-        {"P0420", "Eficiencia catalizador bajo banco 1"},
-        {"P0455", "Fuga grande en sistema EVAP"},
-        {"P0505", "Fallo sistema control ralentí"},
-        {"P0507", "Ralentí más alto de lo esperado"},
-        {"P1297", "Fallo conexión turbocompresor"},
-        {"P2195", "Sensor O2 señal pobre (banco 1)"},
-    };
+    std::vector<DTCCode> allDTCs;
+
+    // Add phase-specific DTCs first, then fallback to general pool
+    switch (m_demoPhase) {
+    case DemoPhase::FuelPumpFailure:
+        allDTCs = {
+            {"P0087", "Presión riel combustible demasiado baja"},
+            {"P0089", "Rendimiento regulador presión combustible"},
+            {"P0171", "Mezcla pobre (banco 1) — inyectores sin combustible"},
+            {"P0174", "Mezcla pobre (banco 2)"},
+            {"P0190", "Circuito sensor presión riel combustible"},
+        };
+        break;
+    case DemoPhase::SlowO2Sensor:
+        allDTCs = {
+            {"P0130", "Circuito sensor O2 B1S1 — mal funcionamiento"},
+            {"P0134", "Sensor O2 B1S1 — sin actividad detectada"},
+            {"P0135", "Calentador sensor O2 B1S1 — circuito"},
+            {"P0150", "Circuito sensor O2 B2S1 — mal funcionamiento"},
+        };
+        break;
+    case DemoPhase::Overheating:
+        allDTCs = {
+            {"P0117", "Circuito sensor ECT — voltaje bajo (temp alta)"},
+            {"P0118", "Circuito sensor ECT — voltaje alto"},
+            {"P0128", "Termostato refrigerante — temp por debajo normal"},
+            {"P0217", "Condición de sobrecalentamiento del motor"},
+            {"P0480", "Circuito ventilador refrigeración — mal funcionamiento"},
+            {"P1299", "Sobrecalentamiento del motor detectado"},
+        };
+        break;
+    default:
+        allDTCs = {
+            {"P0101", "Rango/rendimiento del circuito MAF"},
+            {"P0102", "Entrada baja del circuito MAF"},
+            {"P0171", "Mezcla pobre (banco 1)"},
+            {"P0174", "Mezcla pobre (banco 2)"},
+            {"P0300", "Fallo de encendido aleatorio/múltiples cilindros"},
+            {"P0301", "Fallo de encendido cilindro 1"},
+            {"P0302", "Fallo de encendido cilindro 2"},
+            {"P0303", "Fallo de encendido cilindro 3"},
+            {"P0304", "Fallo de encendido cilindro 4"},
+            {"P0420", "Eficiencia catalizador bajo banco 1"},
+            {"P0455", "Fuga grande en sistema EVAP"},
+            {"P0505", "Fallo sistema control ralentí"},
+            {"P0507", "Ralentí más alto de lo esperado"},
+            {"P1297", "Fallo conexión turbocompresor"},
+            {"P2195", "Sensor O2 señal pobre (banco 1)"},
+        };
+        break;
+    }
+
     m_demoDTCs.push_back(allDTCs[rand() % allDTCs.size()]);
 }
 
@@ -896,6 +1030,11 @@ ELM327::DashboardData MainWindow::generateDemoData(int counter) {
     d.coolant = static_cast<int>(30.0 + 60.0 * warmUp + 3.0 * sin(counter * 0.02));
     d.intakeTemp = 25.0 + 15.0 * warmUp + 2.0 * sin(counter * 0.015);
     d.intakePressure = 30 + 50 * (0.5 + 0.5 * sin(counter * 0.04));
+
+    // ── Shared fuel level (default, phases can override below) ─────
+    double fuelStart = 85.0;
+    double fuelDrop = counter * 0.001;
+    d.fuelLevel = std::max(10.0, fuelStart - fuelDrop);
 
     switch (m_demoPhase) {
 
@@ -999,12 +1138,59 @@ ELM327::DashboardData MainWindow::generateDemoData(int counter) {
         d.timing = 8.0 + 15.0 * (d.rpm / 6500.0);
         break;
     }
+
+    // ── Falla bomba de combustible ─────────────────────────────────────
+    case DemoPhase::FuelPumpFailure: {
+        double stumble = 0.5 + 0.5 * sin(counter * 0.15);
+        double fuelCut = (counter / 8) % 3 == 0 ? 0.3 : 1.0;  // every 3rd cycle fuel cuts
+        d.rpm = static_cast<int>(1200.0 + 800.0 * stumble * fuelCut);
+        if (d.rpm < 500) d.rpm = 500;
+        d.speed = static_cast<int>(10.0 + 30.0 * stumble * fuelCut);
+        d.load = static_cast<int>(15.0 + 20.0 * (1.0 - fuelCut));  // load rises when fuel drops
+        d.throttle = 25.0 + 30.0 * (0.5 + 0.5 * sin(counter * 0.04));  // driver floors it
+        d.maf = (d.rpm / 1000.0) * (d.load / 30.0) * fuelCut;  // MAF drops with fuel
+        d.timing = 5.0 + 10.0 * stumble;
+        // Coolant overrides warmup: slight rise
+        d.coolant = static_cast<int>(88.0 + 5.0 * sin(counter * 0.01));
+        // Fuel level drops fast (simulating leak or pump failure)
+        d.fuelLevel = std::max(5.0, d.fuelLevel - 0.5);
+        break;
     }
 
-    // ── Shared fuel level ──────────────────────────────────────────────
-    double fuelStart = 85.0;
-    double fuelDrop = counter * 0.001;
-    d.fuelLevel = std::max(10.0, fuelStart - fuelDrop);
+    // ── Sensor O2 lento ────────────────────────────────────────────────
+    case DemoPhase::SlowO2Sensor: {
+        double phase = counter * 0.03;  // slower phase variation
+        d.rpm = static_cast<int>(1500.0 + 2000.0 * (0.5 + 0.5 * sin(phase)));
+        d.speed = static_cast<int>(30.0 + 50.0 * (0.5 + 0.5 * sin(counter * 0.02)));
+        d.load = static_cast<int>(20.0 + 25.0 * (0.5 + 0.5 * sin(phase + 0.3)));
+        d.throttle = 12.0 + 25.0 * (0.5 + 0.5 * sin(counter * 0.05));
+        d.maf = (d.rpm / 1000.0) * (d.load / 25.0) + 1.5;
+        d.timing = 8.0 + 18.0 * (d.rpm / 6500.0);
+        break;
+    }
+
+    // ── Sobrecalentamiento ─────────────────────────────────────────────
+    case DemoPhase::Overheating: {
+        double progress = std::min(1.0, m_demoPhaseCounter / 30.0);
+        double phase = counter * 0.04;
+        // RPM: normal but with some surge
+        d.rpm = static_cast<int>(1500.0 + 2500.0 * (0.5 + 0.5 * sin(phase)));
+        d.rpm += static_cast<int>(200.0 * progress * sin(counter * 0.1));  // RPM surge when hot
+        d.speed = static_cast<int>(20.0 + 50.0 * (0.5 + 0.5 * sin(counter * 0.02)));
+        d.load = static_cast<int>(20.0 + 30.0 * (0.5 + 0.5 * sin(phase)));
+        d.throttle = 12.0 + 25.0 * (0.5 + 0.5 * sin(counter * 0.06));
+        d.maf = (d.rpm / 1000.0) * (d.load / 25.0) + 1.5;
+        d.timing = 8.0 + 15.0 * (d.rpm / 6500.0) - 5.0 * progress;  // timing retards when hot
+
+        // 🔥 CRITICAL: Coolant temp rises from 90°C to 125°C over the phase
+        d.coolant = static_cast<int>(90.0 + 35.0 * progress + 3.0 * sin(counter * 0.03));
+        if (d.coolant > 128) d.coolant = 128;
+
+        // Intake temp also rises
+        d.intakeTemp = 35.0 + 20.0 * progress + 2.0 * sin(counter * 0.02);
+        break;
+    }
+    }
 
     return d;
 }
@@ -1020,11 +1206,42 @@ double MainWindow::generateDemoO2(int counter) {
         return 0.85 + 0.1 * sin(counter * 0.5);
     }
 
+    if (m_demoPhase == DemoPhase::FuelPumpFailure) {
+        // Fuel pump failure: oxygen sensor reads lean (high voltage = lean misfire)
+        // Actually O2 lean = low voltage, but with misfire it can read high
+        return 0.15 + 0.1 * sin(counter * 0.3);  // stuck lean
+    }
+
+    if (m_demoPhase == DemoPhase::SlowO2Sensor) {
+        // Slow O2 sensor: switching frequency is ~5x slower than normal
+        // Normal: sin(counter * 0.04) → Slow: sin(counter * 0.008)
+        // Also amplitude is attenuated (sensor lazy)
+        double slowWave = 0.5 + 0.25 * sin(counter * 0.008);  // much slower switching
+        double noise = 0.03 * sin(counter * 0.5);
+        double voltage = slowWave + noise;
+        return std::max(0.1, std::min(0.9, voltage));
+    }
+
+    if (m_demoPhase == DemoPhase::Overheating) {
+        // Overheating: O2 may read falsely lean as sensor degrades
+        double progress = std::min(1.0, m_demoPhaseCounter / 30.0);
+        double base = 0.5 - 0.2 * progress;  // drifts lean over time
+        double wave = 0.2 * sin(counter * 0.05);
+        return std::max(0.05, base + wave);
+    }
+
     // Normal oscillation
     double slowCycle = sin(counter * 0.04);
     double fastNoise = 0.1 * sin(counter * 0.5);
     double voltage = 0.5 + 0.4 * slowCycle + fastNoise;
     return std::max(0.05, std::min(0.95, voltage));
+}
+
+void MainWindow::startDemo() {
+    if (!m_demoMode) {
+        m_actDemo->setChecked(true);
+        onDemo();
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {

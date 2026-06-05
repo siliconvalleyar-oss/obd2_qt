@@ -149,6 +149,32 @@ void DashboardWidget::updateData(const ELM327::DashboardData& data) {
     // Timing: range -64 to +64, center at 0
     double timingNorm = data.timing + 64.0;
     setBar(m_barTiming, m_valTiming, timingNorm, 128, 0, 90, 110, "°", 1);
+
+    // Actualizar sensores O2 y Fuel Trims si el ELM327 está disponible
+    if (m_elm) {
+        // O2 sensor
+        auto o2 = m_elm->getO2Sensor(1, 1);
+        if (o2.voltage >= 0) {
+            m_lblO2Value->setText(QString::number(o2.voltage, 'f', 3) + " V");
+            QString o2Status;
+            QColor o2Color;
+            if (o2.voltage < 0.1)      { o2Status = "POBRE"; o2Color = QColor(255, 100, 100); }
+            else if (o2.voltage > 0.9)  { o2Status = "RICA";  o2Color = QColor(255, 200, 60); }
+            else                        { o2Status = "NORMAL"; o2Color = QColor(100, 255, 100); }
+            m_lblO2Status->setText(o2Status);
+            m_lblO2Status->setStyleSheet(QString("font-size: 14px; font-weight: bold; color: %1;").arg(o2Color.name()));
+        }
+
+        // Fuel Trims
+        double stft = m_elm->getShortTermTrimBank1();
+        double ltft = m_elm->getLongTermTrimBank1();
+        if (stft > -500) {
+            m_lblSTFT->setText(QString("STFT B1: %1%").arg(stft, 0, 'f', 1));
+        }
+        if (ltft > -500) {
+            m_lblLTFT->setText(QString("LTFT B1: %1%").arg(ltft, 0, 'f', 1));
+        }
+    }
 }
 
 void DashboardWidget::updateBarColor(QProgressBar* bar, double value,
