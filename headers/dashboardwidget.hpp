@@ -26,7 +26,18 @@ public:
     void setELM(ELM327* elm) { m_elm = elm; }
 
 public slots:
+    /** @brief Actualiza barras principales con datos rápidos del DashboardData. */
     void updateData(const ELM327::DashboardData& data);
+
+    /**
+     * @brief Actualiza sensores O2 y Fuel Trims (llamada separada y menos frecuente).
+     *
+     * Se llama desde MainWindow cada ~5s para no ralentizar el dashboard principal.
+     * @param o2Voltage Voltaje del sensor O2 B1S1
+     * @param stft Short-term fuel trim B1 (%)
+     * @param ltft Long-term fuel trim B1 (%)
+     */
+    void updateO2AndTrims(double o2Voltage, double stft, double ltft);
 
 private:
     void createSensorBar(const QString& name, const QString& unit,

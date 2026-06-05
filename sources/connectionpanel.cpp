@@ -11,18 +11,27 @@ ConnectionPanel::ConnectionPanel(ELM327* elm, QWidget* parent)
     mainLayout->setContentsMargins(20, 20, 20, 20);
 
     // Title
-    QLabel* title = new QLabel("🔌 CONEXIÓN ELM327");
+    QLabel* title = new QLabel("🔌 ESTADO DE CONEXIÓN");
     title->setStyleSheet("font-size: 16px; font-weight: bold; color: #60CCFF; padding: 8px;");
     title->setAlignment(Qt::AlignCenter);
     mainLayout->addWidget(title);
 
-    // Connection group
-    QGroupBox* connGroup = new QGroupBox("Bluetooth RFCOMM");
-    connGroup->setStyleSheet("QGroupBox { color: #B0B8D0; font-weight: bold; border: 1px solid #3C4158; border-radius: 6px; margin-top: 12px; padding-top: 18px; }");
-    QVBoxLayout* connLayout = new QVBoxLayout(connGroup);
-    connLayout->setSpacing(10);
+    // Info note: connection is controlled from the toolbar
+    QLabel* note = new QLabel("💡 La conexión se controla desde la barra de herramientas superior");
+    note->setStyleSheet("font-size: 11px; color: #8A8FA0; padding: 4px; font-style: italic;");
+    note->setAlignment(Qt::AlignCenter);
+    mainLayout->addWidget(note);
 
-    // MAC address input
+    // MAC address (read-only display)
+    QGroupBox* infoGroup = new QGroupBox("Dispositivo");
+    infoGroup->setStyleSheet(
+        "QGroupBox { color: #B0B8D0; font-weight: bold; border: 1px solid #3C4158; "
+        "border-radius: 6px; margin-top: 12px; padding-top: 18px; }"
+    );
+    QVBoxLayout* infoLayout = new QVBoxLayout(infoGroup);
+    infoLayout->setSpacing(8);
+
+    // MAC
     QHBoxLayout* macLayout = new QHBoxLayout();
     QLabel* macLabel = new QLabel("Dirección MAC:");
     macLabel->setStyleSheet("color: #B0B8D0; font-size: 11px;");
@@ -30,123 +39,86 @@ ConnectionPanel::ConnectionPanel(ELM327* elm, QWidget* parent)
 
     m_macInput = new QLineEdit("00:1D:A5:07:23:6E");
     m_macInput->setPlaceholderText("XX:XX:XX:XX:XX:XX");
+    m_macInput->setReadOnly(true);
     m_macInput->setStyleSheet(
         "QLineEdit { background-color: #1E2230; color: #DCE1F0; border: 1px solid #3C4158; "
         "border-radius: 4px; padding: 6px; font-family: monospace; }"
-        "QLineEdit:focus { border-color: #3C8CFF; }"
     );
     macLayout->addWidget(m_macInput);
-    connLayout->addLayout(macLayout);
+    infoLayout->addLayout(macLayout);
 
-    // Channel input
-    QHBoxLayout* chLayout = new QHBoxLayout();
-    QLabel* chLabel = new QLabel("Canal RFCOMM:");
-    chLabel->setStyleSheet("color: #B0B8D0; font-size: 11px;");
-    chLayout->addWidget(chLabel);
+    mainLayout->addWidget(infoGroup);
 
-    m_channelInput = new QLineEdit("1");
-    m_channelInput->setStyleSheet(
-        "QLineEdit { background-color: #1E2230; color: #DCE1F0; border: 1px solid #3C4158; "
-        "border-radius: 4px; padding: 6px; }"
-        "QLineEdit:focus { border-color: #3C8CFF; }"
+    // Status display group
+    QGroupBox* statusGroup = new QGroupBox("Estado de comunicación");
+    statusGroup->setStyleSheet(
+        "QGroupBox { color: #B0B8D0; font-weight: bold; border: 1px solid #3C4158; "
+        "border-radius: 6px; margin-top: 12px; padding-top: 18px; }"
     );
-    m_channelInput->setFixedWidth(60);
-    chLayout->addWidget(m_channelInput);
-    chLayout->addStretch();
-    connLayout->addLayout(chLayout);
+    QVBoxLayout* statusLayout = new QVBoxLayout(statusGroup);
+    statusLayout->setSpacing(10);
 
-    mainLayout->addWidget(connGroup);
-
-    // Buttons
-    QHBoxLayout* btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(15);
-
-    m_btnConnect = new QPushButton("🔗 CONECTAR");
-    m_btnConnect->setStyleSheet(
-        "QPushButton { background-color: #2D8C2D; color: white; font-weight: bold; padding: 10px 24px; "
-        "border: none; border-radius: 6px; font-size: 13px; }"
-        "QPushButton:hover { background-color: #3AA63A; }"
-        "QPushButton:pressed { background-color: #1E6B1E; }"
-        "QPushButton:disabled { background-color: #3C4158; color: #6A6F80; }"
-    );
-    m_btnConnect->setMinimumHeight(40);
-    btnLayout->addWidget(m_btnConnect);
-
-    m_btnDisconnect = new QPushButton("🔌 DESCONECTAR");
-    m_btnDisconnect->setStyleSheet(
-        "QPushButton { background-color: #8C2D2D; color: white; font-weight: bold; padding: 10px 24px; "
-        "border: none; border-radius: 6px; font-size: 13px; }"
-        "QPushButton:hover { background-color: #A63A3A; }"
-        "QPushButton:pressed { background-color: #6B1E1E; }"
-        "QPushButton:disabled { background-color: #3C4158; color: #6A6F80; }"
-    );
-    m_btnDisconnect->setMinimumHeight(40);
-    m_btnDisconnect->setEnabled(false);
-    btnLayout->addWidget(m_btnDisconnect);
-
-    mainLayout->addLayout(btnLayout);
-
-    // Status labels
+    // Status indicator
     m_lblStatus = new QLabel("⏹ Desconectado");
-    m_lblStatus->setStyleSheet("font-size: 14px; color: #FF6B6B; padding: 6px;");
+    m_lblStatus->setStyleSheet("font-size: 16px; color: #FF6B6B; padding: 6px;");
     m_lblStatus->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(m_lblStatus);
+    statusLayout->addWidget(m_lblStatus);
 
+    // Protocol
     m_lblProtocol = new QLabel("");
-    m_lblProtocol->setStyleSheet("font-size: 12px; color: #8A8FA0;");
+    m_lblProtocol->setStyleSheet("font-size: 13px; color: #8A8FA0;");
     m_lblProtocol->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(m_lblProtocol);
+    statusLayout->addWidget(m_lblProtocol);
 
+    // Last error message
+    m_lblLastError = new QLabel("");
+    m_lblLastError->setStyleSheet("font-size: 11px; color: #FF6B6B; padding: 4px;");
+    m_lblLastError->setAlignment(Qt::AlignCenter);
+    m_lblLastError->setWordWrap(true);
+    statusLayout->addWidget(m_lblLastError);
+
+    mainLayout->addWidget(statusGroup);
+
+    // Bluetooth cleanup info
+    QGroupBox* cleanupGroup = new QGroupBox("Liberación de puerto");
+    cleanupGroup->setStyleSheet(
+        "QGroupBox { color: #B0B8D0; font-weight: bold; border: 1px solid #3C4158; "
+        "border-radius: 6px; margin-top: 12px; padding-top: 18px; }"
+    );
+    QVBoxLayout* cleanupLayout = new QVBoxLayout(cleanupGroup);
+
+    m_lblCleanupInfo = new QLabel(
+        "✅ Al conectar se ejecuta automáticamente la limpieza del puerto Bluetooth:\n"
+        "  • Libera procesos que usan rfcomm\n"
+        "  • Reinicia el stack Bluetooth\n"
+        "  • Recarga el módulo rfcomm\n\n"
+        "En Linux puede requerir ejecutar con sudo para permisos de modprobe/systemctl.\n"
+        "En Windows los puertos COM se gestionan automáticamente."
+    );
+    m_lblCleanupInfo->setStyleSheet("font-size: 11px; color: #8A8FA0; padding: 6px;");
+    m_lblCleanupInfo->setWordWrap(true);
+    cleanupLayout->addWidget(m_lblCleanupInfo);
+
+    mainLayout->addWidget(cleanupGroup);
     mainLayout->addStretch();
-
-    // Connect signals
-    connect(m_btnConnect, &QPushButton::clicked, this, &ConnectionPanel::onConnectClicked);
-    connect(m_btnDisconnect, &QPushButton::clicked, this, &ConnectionPanel::onDisconnectClicked);
 }
 
-void ConnectionPanel::onConnectClicked() {
-    QString mac = m_macInput->text().trimmed();
-    bool ok;
-    int channel = m_channelInput->text().toInt(&ok);
-    if (!ok || channel < 1) channel = 1;
-
-    m_lblStatus->setText("🔄 Conectando...");
-    m_lblStatus->setStyleSheet("font-size: 14px; color: #FFB347; padding: 6px;");
-    m_btnConnect->setEnabled(false);
-    QApplication::processEvents();
-
-    // Recreate ELM327 with new MAC
-    // Note: m_elm is owned by MainWindow, we just use it
-    if (m_elm) {
-        bool success = m_elm->connectBT();
-        if (success) {
-            m_connected = true;
-            m_lblStatus->setText("✅ Conectado a " + mac);
-            m_lblStatus->setStyleSheet("font-size: 14px; color: #6BFF6B; padding: 6px;");
-            m_lblProtocol->setText("Protocolo: " + QString::fromStdString(m_elm->getProtocol()));
-            m_btnConnect->setEnabled(false);
-            m_btnDisconnect->setEnabled(true);
-            m_macInput->setEnabled(false);
-            emit connectionStatusChanged(true);
-        } else {
-            m_connected = false;
-            m_lblStatus->setText("❌ Error de conexión");
-            m_lblStatus->setStyleSheet("font-size: 14px; color: #FF6B6B; padding: 6px;");
-            m_btnConnect->setEnabled(true);
-        }
-    }
+void ConnectionPanel::setMAC(const QString& mac) {
+    m_macInput->setText(mac);
 }
 
-void ConnectionPanel::onDisconnectClicked() {
-    if (m_elm) {
-        m_elm->disconnect();
+void ConnectionPanel::updateStatus(bool connected, const QString& protocol) {
+    m_connected = connected;
+    if (connected) {
+        m_lblStatus->setText("✅ Conectado");
+        m_lblStatus->setStyleSheet("font-size: 16px; color: #6BFF6B; padding: 6px;");
+        m_lblProtocol->setText("Protocolo: " + protocol);
+        m_lblLastError->setText("");
+    } else {
+        m_lblStatus->setText("⏹ Desconectado");
+        m_lblStatus->setStyleSheet("font-size: 16px; color: #8A8FA0; padding: 6px;");
+        m_lblProtocol->setText("");
+        m_lblLastError->setText("");
     }
-    m_connected = false;
-    m_lblStatus->setText("⏹ Desconectado");
-    m_lblStatus->setStyleSheet("font-size: 14px; color: #8A8FA0; padding: 6px;");
-    m_lblProtocol->setText("");
-    m_btnConnect->setEnabled(true);
-    m_btnDisconnect->setEnabled(false);
-    m_macInput->setEnabled(true);
-    emit connectionStatusChanged(false);
+    emit connectionStatusChanged(connected);
 }

@@ -20,6 +20,10 @@
 #include <map>
 #include <functional>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 // Forward declaration
 class SessionLogger;
 
@@ -81,7 +85,7 @@ struct FuelTrim {
  *     addr   [label = "str2ba(mac) → addr.rc_bdaddr"];
  *     conn   [label = "connect(sock, &addr)", fillcolor = "#FFE4B5"];
  *     atz    [label = "ATZ (Reset)"];
- *     config [label = "ATE0 ATL0 ATS0 ATSP0\nATAT1 ATST20", fillcolor = "#C6FFC6"];
+ *     config [label = "ATE0 ATL0 ATS0 ATSP0\nATAT1 ATST10", fillcolor = "#C6FFC6"];
  *     ok     [label = "✅ Conectado", shape = ellipse, fillcolor = "#90EE90"];
  *
  *     init -> sock -> addr -> conn -> atz -> config -> ok;
@@ -150,8 +154,13 @@ public:
     bool connectBT();
     void disconnect();
     
+#ifdef Q_OS_WIN
+    bool isConnected() { return m_hCom != INVALID_HANDLE_VALUE; }
+    bool isOnline() { return m_hCom != INVALID_HANDLE_VALUE; }
+#else
     bool isConnected() { return sock >= 0; }
     bool isOnline() { return sock >= 0; }
+#endif
 
     std::string send(const std::string& cmd, int delayMs = 200);
 
@@ -239,6 +248,20 @@ public:
     bool recoverFromStopped();
     void ensureNormalConfig();
 
+    // ========== Limpieza de puerto Bluetooth ==========
+
+    /**
+     * @brief Libera el puerto Bluetooth antes de conectar.
+     *
+     * En Linux: mata procesos, libera rfcomm, reinicia bluetooth,
+     * descarga y recarga el módulo rfcomm.
+     * En Windows: solo informa (Windows maneja COM automáticamente).
+     *
+     * @note Puede requerir sudo en Linux para modprobe/systemctl.
+     *       Llamar antes de connectBT() para evitar puerto ocupado.
+     */
+    static void fullCleanup();
+
     // ========== Logging ==========
 
     void logAllSensorsRaw(const std::string& filename);
@@ -299,12 +322,21 @@ public:
     // ========== Utilidades ==========
 
     std::vector<std::string> splitResponse(const std::string& response);
+#ifndef Q_OS_WIN
     int getSock() const { return sock; }
+#endif
+#ifdef Q_OS_WIN
+    HANDLE getHandle() const { return m_hCom; }
+#endif
     int getStoppedPenaltyMs() const { return m_stoppedPenaltyMs; }
     int getStoppedCount() const { return m_stoppedCount; }
 
 private:
+#ifdef Q_OS_WIN
+    HANDLE m_hCom;                  ///< Handle del puerto COM en Windows
+#else
     int sock;                       ///< Socket RFCOMM Bluetooth
+#endif
     std::string mac;                ///< Dirección MAC del ELM327
     int channel;                    ///< Canal RFCOMM (usualmente 1)
     bool m_stoppedRecovery;         ///< Flag anti-recursión para STOPPED
@@ -312,8 +344,34 @@ private:
     int m_consecutiveSuccess;       ///< Comandos exitosos consecutivos
     int m_stoppedCount;             ///< Total de STOPPED detectados
     SessionLogger* m_sessionLog;    ///< Logger de sesión (no owned)
+    int m_protocol;                 ///< Protocolo OBD cacheado (-1 = desconocido)
+    bool m_configValid;             ///< true si la configuración AT está aplicada
 
     std::string readRaw();
     std::string parseResponse(const std::string& response, const std::string& expected);
     std::string decodeDTCCode(const std::string& code);
+
+    /**
+     * @brief Detecta y cachea el protocolo OBD usando ATDPN.
+     *        Guarda el número en m_protocol y lo persiste a protocol.cache.
+     */
+    void detectAndCacheProtocol();
+
+    /**
+     * @brief Carga el protocolo cacheado desde protocol.cache.
+     *        Si existe un archivo válido, actualiza m_protocol.
+     */
+    void loadCachedProtocol();
+
+    /**
+     * @brief Persiste el número de protocolo a protocol.cache.
+     * @param protocol Número de protocolo (ej: 6 para CAN 11-bit/500k).
+     */
+    void saveCachedProtocol(int protocol);
+
+    /**
+     * @brief Devuelve la ruta del archivo de cache de protocolo.
+     * @return "protocol.cache" en el directorio de trabajo.
+     */
+    static std::string getCacheFilePath();
 };

@@ -28,6 +28,7 @@
 #include <locale>
 #include <thread>
 #include <chrono>
+#include <cstdlib>
 
 #ifndef Q_OS_WIN
 #include <sys/socket.h>
@@ -51,7 +52,7 @@ ELM327::ELM327(const std::string& macAddr, int ch)
 #endif
       mac(macAddr), channel(ch), m_stoppedRecovery(false),
       m_stoppedPenaltyMs(0), m_consecutiveSuccess(0), m_stoppedCount(0),
-      m_sessionLog(nullptr) {}
+      m_sessionLog(nullptr), m_protocol(-1), m_configValid(false) {}
 
 ELM327::~ELM327()
 {
@@ -64,10 +65,13 @@ ELM327::~ELM327()
 
 bool ELM327::connectBT()
 {
+    // Liberar puerto Bluetooth antes de conectar
+    fullCleanup();
+
 #ifdef Q_OS_WIN
     // ── Conexión Windows: abrir puerto COM virtual Bluetooth SPP ──
     std::string comPort = "\\\\.\\" + mac;
-    std::cout << "[INFO] Abriendo " << comPort << "...\n";
+    std::cout << "[monitor] Abriendo " << comPort << "...\n";
 
     m_hCom = CreateFileA(
         comPort.c_str(),
@@ -80,7 +84,7 @@ bool ELM327::connectBT()
     );
 
     if (m_hCom == INVALID_HANDLE_VALUE) {
-        std::cerr << "[ERROR] CreateFile (" << comPort << "): " << GetLastError() << std::endl;
+        std::cerr << "[monitor] CreateFile (" << comPort << "): " << GetLastError() << std::endl;
         return false;
     }
 
@@ -90,7 +94,7 @@ bool ELM327::connectBT()
     memset(&dcb, 0, sizeof(dcb));
     dcb.DCBlength = sizeof(DCB);
     if (!GetCommState(m_hCom, &dcb)) {
-        std::cerr << "[ERROR] GetCommState: " << GetLastError() << std::endl;
+        std::cerr << "[monitor] GetCommState: " << GetLastError() << std::endl;
         CloseHandle(m_hCom);
         m_hCom = INVALID_HANDLE_VALUE;
         return false;
@@ -104,7 +108,7 @@ bool ELM327::connectBT()
     dcb.fRtsControl = RTS_CONTROL_ENABLE;
 
     if (!SetCommState(m_hCom, &dcb)) {
-        std::cerr << "[ERROR] SetCommState: " << GetLastError() << std::endl;
+        std::cerr << "[monitor] SetCommState: " << GetLastError() << std::endl;
         CloseHandle(m_hCom);
         m_hCom = INVALID_HANDLE_VALUE;
         return false;
@@ -121,7 +125,7 @@ bool ELM327::connectBT()
 
     PurgeComm(m_hCom, PURGE_RXCLEAR | PURGE_TXCLEAR);
 
-    std::cout << "[OK] " << comPort << " abierto correctamente!\n";
+    std::cout << "[monitor] " << comPort << " abierto correctamente!\n";
 #else
 #ifdef USE_BLUEZ
     // ── Conexión Linux: Bluetooth RFCOMM socket ──
@@ -130,7 +134,7 @@ bool ELM327::connectBT()
     sock = socket(AF_BLUETOOTH, SOCK_STREAM, BTPROTO_RFCOMM);
     if (sock < 0)
     {
-        perror("[ERROR] socket");
+        perror("[monitor] socket");
         return false;
     }
 
@@ -138,17 +142,17 @@ bool ELM327::connectBT()
     addr.rc_channel = (uint8_t)channel;
     str2ba(mac.c_str(), &addr.rc_bdaddr);
 
-    std::cout << "[INFO] Conectando a " << mac << "...\n";
+    std::cout << "[monitor] Conectando a " << mac << "...\n";
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
     {
-        perror("[ERROR] connect");
+        perror("[monitor] connect");
         return false;
     }
 
-    std::cout << "[OK] Conectado!\n";
+    std::cout << "[monitor] Conectado!\n";
 #else
-    std::cerr << "[ERROR] Compilado sin soporte Bluetooth (falta libbluetooth-dev)" << std::endl;
+    std::cerr << "[monitor] Compilado sin soporte Bluetooth (falta libbluetooth-dev)" << std::endl;
     return false;
 #endif
 #endif
@@ -158,10 +162,26 @@ bool ELM327::connectBT()
     send("ATE0");
     send("ATL0");
     send("ATS0");
-    send("ATSP0");
+    // Usar protocolo cacheado si está disponible (evita ATSP0 ~2-3s)
+    loadCachedProtocol();
+    if (m_protocol > 0) {
+        send("ATSP" + std::to_string(m_protocol));
+        std::cout << "[monitor] Usando protocolo cacheado: ATSP" << m_protocol << std::endl;
+    } else {
+        send("ATSP0");
+    }
     send("ATAT1");
-    send("ATST20");
+    send("ATST10");
+    send("ATAL1");  // Allow long CAN messages (multi-frame)
+    send("ATCF 7E8", 50); // CAN filter: solo ECU (0x7E8)
+    send("ATCM 7FF", 50); // CAN mask: coincidencia exacta 11 bits
 
+    // Detectar y cachear protocolo para futuras conexiones rápidas
+    if (m_protocol <= 0) {
+        detectAndCacheProtocol();
+    }
+
+    m_configValid = true;
     return true;
 }
 
@@ -170,14 +190,14 @@ void ELM327::disconnect()
 #ifdef Q_OS_WIN
     if (m_hCom != INVALID_HANDLE_VALUE)
     {
-        std::cout << "[INFO] Cerrando conexión COM\n";
+        std::cout << "[monitor] Cerrando conexión COM\n";
         CloseHandle(m_hCom);
         m_hCom = INVALID_HANDLE_VALUE;
     }
 #else
     if (sock >= 0)
     {
-        std::cout << "[INFO] Cerrando conexión\n";
+        std::cout << "[monitor] Cerrando conexión\n";
         close(sock);
         sock = -1;
     }
@@ -222,7 +242,7 @@ std::string ELM327::sendRaw(const std::string& cmd, int timeoutMs) {
     if (!isConnected()) return "";
     
     std::string full = cmd + "\r";
-    std::cout << "[TX RAW] " << cmd << std::endl;
+    std::cout << "[monitor] TX: " << cmd << std::endl;
     
 #ifdef Q_OS_WIN
     DWORD written;
@@ -282,20 +302,20 @@ std::string ELM327::sendRaw(const std::string& cmd, int timeoutMs) {
     response.erase(std::remove(response.begin(), response.end(), '\n'), response.end());
     
     if (!response.empty()) {
-        std::cout << "[RX RAW] " << response.substr(0, 120) << std::endl;
+        std::cout << "[monitor] RX: " << response.substr(0, 120) << std::endl;
     }
     
     // Detectar STOPPED y recuperar (con penalidad adaptativa)
     if (!m_stoppedRecovery && response.find("STOPPED") != std::string::npos) {
-        std::cout << "[WARN] sendRaw detectó STOPPED! Recuperando...\n";
+        std::cout << "[monitor] sendRaw detectó STOPPED! Recuperando...\n";
         m_stoppedRecovery = true;
         m_stoppedPenaltyMs = std::min(m_stoppedPenaltyMs + 100, 1000);
         m_consecutiveSuccess = 0;
         m_stoppedCount++;
-        std::cout << "[ADAPT] Penalidad +" << m_stoppedPenaltyMs << "ms (total: " << m_stoppedCount << ")\n";
+        std::cout << "[monitor] Penalidad +" << m_stoppedPenaltyMs << "ms (total: " << m_stoppedCount << ")\n";
         recoverFromStopped();
         m_stoppedRecovery = false;
-        std::cout << "[RETRY] Reintentando " << cmd << "...\n";
+        std::cout << "[monitor] Reintentando " << cmd << "...\n";
         return sendRaw(cmd, timeoutMs);
     }
     
@@ -306,9 +326,9 @@ std::string ELM327::sendRaw(const std::string& cmd, int timeoutMs) {
             m_stoppedPenaltyMs = std::max(0, m_stoppedPenaltyMs - 25);
             m_consecutiveSuccess = 0;
             if (m_stoppedPenaltyMs > 0) {
-                std::cout << "[ADAPT] Penalidad reducida a +" << m_stoppedPenaltyMs << "ms\n";
+                std::cout << "[monitor] Penalidad reducida a +" << m_stoppedPenaltyMs << "ms\n";
             } else {
-                std::cout << "[ADAPT] Penalidad restablecida a 0ms\n";
+                std::cout << "[monitor] Penalidad restablecida a 0ms\n";
             }
         }
     }
@@ -324,7 +344,7 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
     
     std::string full = cmd + "\r";
 
-    std::cout << "[TX] " << cmd << std::endl;
+    std::cout << "[monitor] TX: " << cmd << std::endl;
 
 #ifdef Q_OS_WIN
     DWORD written;
@@ -333,10 +353,8 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
     char buffer[4096];
     std::string response;
     int timeoutMs = (delayMs > 0) ? delayMs : 200;
-    int effectiveTimeout = timeoutMs + m_stoppedPenaltyMs;
-
-    if (m_stoppedPenaltyMs > 0 && cmd.substr(0, 2) != "AT") {
-        std::cout << "[ADAPT] +" << m_stoppedPenaltyMs << "ms (" << m_stoppedCount << " STOPPED)\n";
+    int effectiveTimeout = timeoutMs + m_stoppedPenaltyMs;        if (m_stoppedPenaltyMs > 0 && cmd.substr(0, 2) != "AT") {
+        std::cout << "[monitor] ADAPT: +" << m_stoppedPenaltyMs << "ms (" << m_stoppedCount << " STOPPED)\n";
     }
 
     COMMTIMEOUTS oldCt;
@@ -375,7 +393,7 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
     tv.tv_usec = (effectiveTimeout % 1000) * 1000;
     
     if (m_stoppedPenaltyMs > 0 && cmd.substr(0, 2) != "AT") {
-        std::cout << "[ADAPT] +" << m_stoppedPenaltyMs << "ms (" << m_stoppedCount << " STOPPED)\n";
+        std::cout << "[monitor] ADAPT: +" << m_stoppedPenaltyMs << "ms (" << m_stoppedCount << " STOPPED)\n";
     }
     
     while (true) {
@@ -401,7 +419,7 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
     logResp.erase(std::remove(logResp.begin(), logResp.end(), '\r'), logResp.end());
     logResp.erase(std::remove(logResp.begin(), logResp.end(), '\n'), logResp.end());
     if (!logResp.empty()) {
-        std::cout << "[RX] " << logResp.substr(0, 100) << std::endl;
+        std::cout << "[monitor] RX: " << logResp.substr(0, 100) << std::endl;
     }
     
     // Session log: comando + respuesta hex
@@ -418,7 +436,7 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
     
     // Detectar estado STOPPED y recuperar automáticamente
     if (!m_stoppedRecovery && logResp.find("STOPPED") != std::string::npos) {
-        std::cout << "[WARN] ELM327 en estado STOPPED! Recuperando...\n";
+        std::cout << "[monitor] ELM327 en estado STOPPED! Recuperando...\n";
         m_stoppedRecovery = true;
         
         // --- Lógica adaptativa ---
@@ -426,12 +444,12 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
         m_stoppedPenaltyMs = std::min(m_stoppedPenaltyMs + 100, 1000);
         m_consecutiveSuccess = 0;
         m_stoppedCount++;
-        std::cout << "[ADAPT] Penalidad +" << m_stoppedPenaltyMs << "ms (total STOPPED: " << m_stoppedCount << ")\n";
+        std::cout << "[monitor] Penalidad +" << m_stoppedPenaltyMs << "ms (total STOPPED: " << m_stoppedCount << ")\n";
         
         recoverFromStopped();
         m_stoppedRecovery = false;
         // Reintentar el comando original
-        std::cout << "[RETRY] Reintentando " << cmd << " con penalidad " << m_stoppedPenaltyMs << "ms...\n";
+        std::cout << "[monitor] Reintentando " << cmd << " con penalidad " << m_stoppedPenaltyMs << "ms...\n";
         return send(cmd, delayMs);
     }
     
@@ -443,9 +461,9 @@ std::string ELM327::send(const std::string& cmd, int delayMs)
             m_stoppedPenaltyMs = std::max(0, m_stoppedPenaltyMs - 25);
             m_consecutiveSuccess = 0;
             if (m_stoppedPenaltyMs > 0) {
-                std::cout << "[ADAPT] Penalidad reducida a +" << m_stoppedPenaltyMs << "ms\n";
+                std::cout << "[monitor] Penalidad reducida a +" << m_stoppedPenaltyMs << "ms\n";
             } else {
-                std::cout << "[ADAPT] Penalidad restablecida a 0ms\n";
+                std::cout << "[monitor] Penalidad restablecida a 0ms\n";
             }
         }
     }
@@ -951,7 +969,7 @@ std::vector<OxygenSensor> ELM327::getOxygenSensors()
     
     // Si no se encontraron sensores, mostrar mensaje
     if (sensors.empty()) {
-        std::cout << "[INFO] No se detectaron sensores de oxígeno" << std::endl;
+        std::cout << "[monitor] No se detectaron sensores de oxígeno" << std::endl;
     }
     
     return sensors;
@@ -1044,7 +1062,7 @@ std::vector<DTCCode> ELM327::getDTCs()
 
 bool ELM327::clearDTCs()
 {
-    std::cout << "[INFO] Preparando ELM327 para limpiar DTCs..." << std::endl;
+    std::cout << "[monitor] Preparando ELM327 para limpiar DTCs..." << std::endl;
 
     // Para modo CAN, NO usar ATH1 (headers ON) antes de 04.
     // ATH1 + modo 04 causa respuesta 7F porque el vehículo recibe
@@ -1054,40 +1072,44 @@ bool ELM327::clearDTCs()
     send("ATL0", 200);    // Linefeeds OFF
     send("ATS0", 200);    // Spaces OFF
     send("ATH0", 200);    // Headers OFF (importante para modo 04 en CAN!)
-    send("ATSP0", 500);   // Auto protocolo
+    if (m_protocol > 0) {
+        send("ATSP" + std::to_string(m_protocol), 500);
+    } else {
+        send("ATSP0", 500);   // Auto protocolo
+    }
     send("ATAT1", 100);   // Adaptor timeout mínimo
     send("ATST10", 100);  // Timeout búsqueda 100ms
     send("ATD", 300);     // Limpiar buffer
 
-    std::cout << "[INFO] Limpiando códigos de error..." << std::endl;
+    std::cout << "[monitor] Limpiando códigos de error..." << std::endl;
 
     for (int i = 0; i < 3; i++) {
         std::string r = send("04", 1500);
-        std::cout << "[DEBUG] Respuesta: " << r.substr(0, 60) << std::endl;
+        std::cout << "[monitor] DEBUG: " << r.substr(0, 60) << std::endl;
 
         // Respuesta válida: 44 = positivo modo 04
         if (r.find("44") != std::string::npos) {
-            std::cout << "[OK] Códigos de error borrados correctamente" << std::endl;
+            std::cout << "[monitor] Códigos de error borrados correctamente" << std::endl;
             // Restaurar configuración normal: headers OFF y echo OFF
             ensureNormalConfig();
             return true;
         }
 
         if (r.find("OK") != std::string::npos) {
-            std::cout << "[OK] Comando aceptado" << std::endl;
+            std::cout << "[monitor] Comando aceptado" << std::endl;
             ensureNormalConfig();
             return true;
         }
 
         // Si es BUS INIT ERROR o NO DATA, reintentar
         if (r.find("BUS INIT") != std::string::npos || r.find("ERROR") != std::string::npos) {
-            std::cout << "[WARN] Error de bus, reintentando..." << std::endl;
+            std::cout << "[monitor] Error de bus, reintentando..." << std::endl;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    std::cout << "[ERROR] No se pudieron borrar los códigos" << std::endl;
+    std::cout << "[monitor] No se pudieron borrar los códigos" << std::endl;
     ensureNormalConfig();
     return false;
 }
@@ -1294,7 +1316,7 @@ std::string ELM327::getTestResults() {
 // ============================================================================
 
 bool ELM327::requestO2Test(int bank, int sensor) {
-    std::cout << "[INFO] Solicitando prueba de sensor O2 B" << bank << "S" << sensor << "...\n";
+    std::cout << "[monitor] Solicitando prueba de sensor O2 B" << bank << "S" << sensor << "...\n";
     
     // Modo 08 - PID de prueba según banco/sensor
     // Formato: 08 [PID de prueba]
@@ -1307,11 +1329,11 @@ bool ELM327::requestO2Test(int bank, int sensor) {
     std::string resp = send(ss.str(), 1000);
     
     if (resp.find("48") != std::string::npos) {
-        std::cout << "[OK] Prueba de sensor completada\n";
+        std::cout << "[monitor] Prueba de sensor completada\n";
         return true;
     }
     
-    std::cout << "[WARN] Prueba no disponible o no soportada\n";
+    std::cout << "[monitor] Prueba no disponible o no soportada\n";
     return false;
 }
 
@@ -1416,6 +1438,7 @@ std::vector<ELM327::ModuleScanResult> ELM327::autoScan() {
     const int numModules = 9;
     
     ensureNormalConfig();
+    send("ATCM 000", 50); // Clear filter: accept all CAN IDs during scan
     
     for (int i = 0; i < numModules; i++) {
         int id = moduleIds[i];
@@ -1507,7 +1530,7 @@ std::string ELM327::getVIN()
     response.erase(std::remove(response.begin(), response.end(), '\r'), response.end());
     response.erase(std::remove(response.begin(), response.end(), '\n'), response.end());
     
-    std::cout << "[DEBUG VIN RAW] " << response << std::endl;
+    std::cout << "[monitor] VIN RAW: " << response << std::endl;
     
     // Buscar el patrón de respuesta correcta
     // Formato: 49 02 01 [bytes ASCII del VIN]
@@ -1643,7 +1666,7 @@ std::string ELM327::sendCommand(const std::string& pidHex)
 #endif
 
     std::string cmd = "22 " + pidHex;
-    std::cout << "[TX GM] " << cmd << std::endl;
+    std::cout << "[monitor] TX: " << cmd << std::endl;
 
     std::string full = cmd + "\r";
 #ifdef Q_OS_WIN
@@ -1704,11 +1727,11 @@ std::string ELM327::sendCommand(const std::string& pidHex)
     response.erase(std::remove(response.begin(), response.end(), '>'), response.end());
 
     // Mostrar diagnóstico
-    std::cout << "[RX GM] " << response << std::endl;
+    std::cout << "[monitor] RX: " << response << std::endl;
 
     // Detectar error
     if (response.find("7F") == 0) {
-        std::cerr << "⚠️  Error en comando GM: PID no soportado o comunicación fallida" << std::endl;
+        std::cerr << "[monitor] Error en comando GM: PID no soportado o comunicación fallida" << std::endl;
         return "";
     }
 
@@ -1978,15 +2001,21 @@ ELM327::DashboardData ELM327::getDashboardFast() {
     
     if (!isConnected()) return d;
     
-    // Asegurar configuración normal antes de lectura rápida
-    ensureNormalConfig();
+    // Asegurar configuración normal antes de lectura rápida (solo si es necesario)
+    if (!m_configValid) {
+        ensureNormalConfig();
+    }
     
     // Leer cada PID individualmente y procesar cada respuesta por separado
     // Esto evita el bug de concatenación de respuestas donde '>' truncaba los datos
+    //
+    // OPTIMIZACIÓN: delays reducidos de 200ms a 50ms entre comandos para
+    // acelerar la lectura del dashboard (~3s vs ~5s anteriormente).
+    // Timeout de cada comando reducido de 300ms a 200ms.
     
     // RPM (010C) - 2 bytes: (A*256+B)/4
     {
-        std::string r = send("010C", 300);
+        std::string r = send("010C", 200);
         auto b = splitResponse(r);
         if (b.size() >= 4) {
             try {
@@ -1996,81 +2025,81 @@ ELM327::DashboardData ELM327::getDashboardFast() {
             } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Speed (010D) - 1 byte
     {
-        std::string r = send("010D", 300);
+        std::string r = send("010D", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.speed = std::stoi(b[2], nullptr, 16); } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Coolant temp (0105) - 1 byte: A-40
     {
-        std::string r = send("0105", 300);
+        std::string r = send("0105", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.coolant = std::stoi(b[2], nullptr, 16) - 40; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Engine load (0104) - 1 byte: A*100/255
     {
-        std::string r = send("0104", 300);
+        std::string r = send("0104", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.load = (std::stoi(b[2], nullptr, 16) * 100) / 255; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Throttle (0111) - 1 byte: A*100/255
     {
-        std::string r = send("0111", 300);
+        std::string r = send("0111", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.throttle = (std::stoi(b[2], nullptr, 16) * 100.0) / 255.0; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Intake pressure (010B) - 1 byte
     {
-        std::string r = send("010B", 300);
+        std::string r = send("010B", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.intakePressure = std::stoi(b[2], nullptr, 16); } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Intake temp (010F) - 1 byte: A-40
     {
-        std::string r = send("010F", 300);
+        std::string r = send("010F", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.intakeTemp = std::stoi(b[2], nullptr, 16) - 40; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Timing advance (010E) - 1 byte: A/2 - 64
     {
-        std::string r = send("010E", 300);
+        std::string r = send("010E", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.timing = (std::stoi(b[2], nullptr, 16) / 2.0) - 64; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // MAF (0110) - 2 bytes: (A*256+B)/100
     {
-        std::string r = send("0110", 300);
+        std::string r = send("0110", 200);
         auto b = splitResponse(r);
         if (b.size() >= 4) {
             try {
@@ -2080,11 +2109,11 @@ ELM327::DashboardData ELM327::getDashboardFast() {
             } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     // Fuel level (012F) - 1 byte: A*100/255
     {
-        std::string r = send("012F", 300);
+        std::string r = send("012F", 200);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.fuelLevel = (std::stoi(b[2], nullptr, 16) * 100.0) / 255.0; } catch (...) {}
@@ -2096,6 +2125,102 @@ ELM327::DashboardData ELM327::getDashboardFast() {
 }
 
 // ============================================================================
+// Limpieza de puerto Bluetooth (segura, sin sudo)
+// ============================================================================
+
+void ELM327::fullCleanup() {
+    std::cout << "[monitor] Liberando puerto Bluetooth..." << std::endl;
+
+#ifdef Q_OS_WIN
+    std::cout << "[monitor] Windows: puertos COM gestionados automáticamente" << std::endl;
+#else
+    // Linux: limpieza básica sin requerir privilegios
+    std::cout << "[monitor] Linux: liberando rfcomm..." << std::endl;
+
+    // Liberar dispositivos rfcomm (funciona para usuarios en grupo bluetooth)
+    int ret = system("rfcomm release all 2>/dev/null");
+    if (ret == 0) {
+        std::cout << "[monitor] rfcomm liberado" << std::endl;
+    } else {
+        std::cout << "[monitor] rfcomm no requiere liberación" << std::endl;
+    }
+
+    std::cout << "[monitor] Sistema listo para conexión" << std::endl;
+#endif
+}
+
+// ============================================================================
+// Cacheo de protocolo OBD
+//
+// detectAndCacheProtocol() usa ATDPN para obtener el número de protocolo
+// detectado por ATSP0 y lo guarda en m_protocol + protocol.cache.
+// loadCachedProtocol() lee el archivo de cache si existe.
+// ============================================================================
+
+std::string ELM327::getCacheFilePath() {
+    return "protocol.cache";
+}
+
+void ELM327::loadCachedProtocol() {
+    std::ifstream f(getCacheFilePath());
+    if (!f.is_open()) {
+        m_protocol = -1;
+        return;
+    }
+    int p = -1;
+    f >> p;
+    if (p >= 1 && p <= 9) {
+        m_protocol = p;
+        std::cout << "[monitor] Protocolo cargado: " << m_protocol << std::endl;
+    } else {
+        m_protocol = -1;
+    }
+}
+
+void ELM327::saveCachedProtocol(int protocol) {
+    std::ofstream f(getCacheFilePath());
+    if (!f.is_open()) {
+        std::cerr << "[monitor] No se pudo guardar protocol.cache" << std::endl;
+        return;
+    }
+    f << protocol;
+    std::cout << "[monitor] Protocolo " << protocol << " guardado a " << getCacheFilePath() << std::endl;
+}
+
+void ELM327::detectAndCacheProtocol() {
+    std::string r = send("ATDPN", 300);
+    if (r.empty()) {
+        std::cout << "[monitor] ATDPN no respondió, no se cachea protocolo" << std::endl;
+        return;
+    }
+    // Limpiar respuesta: quitar \r, \n, \r\n, espacios
+    r.erase(std::remove(r.begin(), r.end(), '\r'), r.end());
+    r.erase(std::remove(r.begin(), r.end(), '\n'), r.end());
+    r.erase(std::remove(r.begin(), r.end(), ' '), r.end());
+    // Quitar prompt '>' si existe
+    size_t p = r.find('>');
+    if (p != std::string::npos) r = r.substr(0, p);
+    
+    if (r.empty()) {
+        std::cout << "[monitor] ATDPN respuesta vacía" << std::endl;
+        return;
+    }
+    
+    try {
+        int protocol = std::stoi(r);
+        if (protocol >= 1 && protocol <= 9) {
+            m_protocol = protocol;
+            saveCachedProtocol(protocol);
+            std::cout << "[monitor] Protocolo detectado: " << protocol << std::endl;
+        } else {
+            std::cout << "[monitor] Número de protocolo fuera de rango: " << protocol << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cout << "[monitor] No se pudo parsear ATDPN: '" << r << "' (" << e.what() << ")" << std::endl;
+    }
+}
+
+// ============================================================================
 // Recuperación de estado STOPPED y configuración normal
 //
 // recoverFromStopped() intenta ATD primero, ATZ como fallback,
@@ -2103,7 +2228,7 @@ ELM327::DashboardData ELM327::getDashboardFast() {
 // ============================================================================
 
 bool ELM327::recoverFromStopped() {
-    std::cout << "[RECOVERY] Recuperando ELM327 de estado STOPPED...\n";
+    std::cout << "[monitor] Recuperando ELM327 de estado STOPPED...\n";
     
     // 1. Enviar comando vacío para "despertar"
     const char* wake = "\r";
@@ -2121,12 +2246,12 @@ bool ELM327::recoverFromStopped() {
     
     // 3. Si ATD no responde, intentar ATZ como fallback
     if (atdResp.empty() || atdResp.find("OK") == std::string::npos) {
-        std::cout << "[RECOVERY] ATD no respondió, intentando ATZ...\n";
+        std::cout << "[monitor] ATD no respondió, intentando ATZ...\n";
         send("ATZ", 2000);
         if (m_stoppedPenaltyMs > 0) {
             m_stoppedPenaltyMs = 0;
             m_consecutiveSuccess = 0;
-            std::cout << "[ADAPT] Penalidad restablecida a 0ms (ATZ completado)\n";
+            std::cout << "[monitor] Penalidad restablecida a 0ms (ATZ completado)\n";
         }
     }
     
@@ -2170,21 +2295,34 @@ bool ELM327::recoverFromStopped() {
     send("ATH0", 150);   // Headers OFF
     send("ATS0", 150);   // Spaces OFF
     send("ATL0", 150);   // Linefeeds OFF
-    send("ATSP0", 500);  // Protocolo automático (re-detecta después de STOPPED)
+    if (m_protocol > 0) {
+        send("ATSP" + std::to_string(m_protocol), 500);
+        std::cout << "[monitor] Re-aplicando protocolo cacheado: ATSP" << m_protocol << std::endl;
+    } else {
+        send("ATSP0", 500);  // Protocolo automático
+    }
     send("ATAT1", 100);  // Adaptive timing mínimo
-    send("ATST20", 100); // Timeout 200ms
+    send("ATST10", 100); // Timeout 40ms
+    send("ATAL1", 50);   // Allow long CAN messages
+    send("ATCF 7E8", 50); // CAN filter: solo ECU (0x7E8)
+    send("ATCM 7FF", 50); // CAN mask: coincidencia exacta 11 bits
     
-    std::cout << "[RECOVERY] ELM327 recuperado correctamente\n";
+    m_configValid = true;
+    std::cout << "[monitor] ELM327 recuperado correctamente\n";
     return true;
 }
 
 void ELM327::ensureNormalConfig() {
+    m_configValid = true;
     send("ATE0", 150);  // Echo OFF
     send("ATH0", 150);  // Headers OFF
     send("ATS0", 150);  // Spaces OFF
     send("ATL0", 150);  // Linefeeds OFF
     send("ATAT1", 100); // Adaptive timing mínimo
-    send("ATST20", 100);// Timeout 200ms
+    send("ATST10", 100);// Timeout 40ms
+    send("ATAL1", 50);  // Allow long CAN messages
+    send("ATCF 7E8", 50);// CAN filter: solo ECU (0x7E8)
+    send("ATCM 7FF", 50);// CAN mask: coincidencia exacta 11 bits
 }
 
 // ============================================================================
@@ -2195,7 +2333,7 @@ void ELM327::logAllSensorsRaw(const std::string& filename) {
     Logger::ensureLogsDir();
     std::ofstream file(filename);
     if (!file.is_open()) {
-        std::cerr << "[ERROR] No se pudo crear " << filename << std::endl;
+        std::cerr << "[monitor] No se pudo crear " << filename << std::endl;
         return;
     }
     
@@ -2260,7 +2398,7 @@ void ELM327::logAllSensorsRaw(const std::string& filename) {
     }
     
     file.close();
-    std::cout << "[OK] Log completo guardado en " << filename << std::endl;
+    std::cout << "[monitor] Log completo guardado en " << filename << std::endl;
 }
 
 // ============================================================================
@@ -2277,7 +2415,7 @@ void ELM327::logP0171Diagnostic(const std::string& filename, int durationSec) {
     std::ofstream file(filename);
     file.imbue(std::locale::classic());
     if (!file.is_open()) {
-        std::cerr << "[ERROR] No se pudo crear " << filename << std::endl;
+        std::cerr << "[monitor] No se pudo crear " << filename << std::endl;
         return;
     }
     
@@ -2287,8 +2425,8 @@ void ELM327::logP0171Diagnostic(const std::string& filename, int durationSec) {
     time_t start = time(nullptr);
     int count = 0;
     
-    std::cout << "[INFO] Registrando datos para diagnóstico P0171 durante " << durationSec << " segundos...\n";
-    std::cout << "[INFO] Muestreo continuo (~1s por muestra)\n";
+    std::cout << "[monitor] Registrando datos para diagnóstico P0171 durante " << durationSec << " segundos...\n";
+    std::cout << "[monitor] Muestreo continuo (~1s por muestra)\n";
     std::cout << "Presione Ctrl+C para detener antes.\n\n";
     
     while (time(nullptr) - start < durationSec) {
@@ -2376,5 +2514,5 @@ void ELM327::logP0171Diagnostic(const std::string& filename, int durationSec) {
     }
     
     file.close();
-    std::cout << "\n[OK] Log P0171 guardado en " << filename << " (" << count << " registros en " << (time(nullptr)-start) << "s)\n";
+    std::cout << "\n[monitor] Log P0171 guardado en " << filename << " (" << count << " registros en " << (time(nullptr)-start) << "s)\n";
 }

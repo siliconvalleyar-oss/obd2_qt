@@ -45,6 +45,9 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow();
 
+    /** @brief Activa modo demo. Llamado desde main.cpp con --demo */
+    void startDemo();
+
 private slots:
     void onConnect();
     void onDisconnect();
@@ -59,6 +62,7 @@ private slots:
     void onTimerTick();
     void onConnectionStatusChanged(bool connected);
     void onDemo();
+    void closeApplication();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -121,15 +125,24 @@ private:
     int m_sessCountRPM;
     int m_sessMaxSpeed;
 
+    // Tick counter for staggered OBD-II fetches
+    int m_tickCounter;
+
+    // Toolbar pointer (needed for widgetForAction)
+    QToolBar* m_toolbar;
+
     // Demo scenarios
     enum class DemoPhase {
-        Normal,           // Conducción normal suave
-        AccelBrusca,      // Aceleración brusca a fondo
-        PostAccel,        // Recuperación tras aceleración
-        FallaSensor,      // Falla intermitente de sensor (MAF/O2)
-        Recovery,         // Recuperación de falla
-        RalentiIrregular, // Ralentí irregular, motor fallando
-        DTCTrigger        // Múltiples DTCs, MIL encendido
+        Normal,             // Conducción normal suave
+        AccelBrusca,        // Aceleración brusca a fondo
+        PostAccel,          // Recuperación tras aceleración
+        FallaSensor,        // Falla intermitente de sensor (MAF/O2)
+        FuelPumpFailure,    // 💀 Falla bomba combustible — presión baja, mezcla pobre
+        SlowO2Sensor,       // ⏳ Sensor O2 lento — conmutación retardada
+        Overheating,        // 🔥 Sobrecalentamiento — temp refrigerante crítica
+        Recovery,           // Recuperación de falla
+        RalentiIrregular,   // Ralentí irregular, motor fallando
+        DTCTrigger          // Múltiples DTCs, MIL encendido
     };
     DemoPhase m_demoPhase;
     int m_demoPhaseCounter;

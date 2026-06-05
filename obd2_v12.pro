@@ -1,7 +1,12 @@
 QT       += core gui widgets charts
 CONFIG   += c++17
 TEMPLATE  = app
-TARGET    = obd2_v8
+TARGET = obd2_v12
+
+# En MSYS2/MinGW, definir Q_OS_WIN para #ifdef Q_OS_WIN en elm327.cpp
+win32 {
+    DEFINES += Q_OS_WIN
+}
 
 # Directorios de includes
 INCLUDEPATH += . headers
@@ -40,8 +45,11 @@ RESOURCES +=
 QMAKE_CXXFLAGS_RELEASE += -O2
 QMAKE_LFLAGS_RELEASE += -s
 
-# Incluir Bluetooth
-LIBS += -lbluetooth
+# Incluir Bluetooth (solo en Linux)
+!win32 {
+    LIBS += -lbluetooth
+    DEFINES += USE_BLUEZ
+}
 
 # Destino del binario
 DESTDIR = bin

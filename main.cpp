@@ -4,6 +4,10 @@
  *
  * Inicializa QApplication con estilo Fusion oscuro y abre la
  * ventana principal del escáner de diagnóstico automotriz.
+ *
+ * La aplicación arranca en modo conexión real.
+ * Para activar el modo demo (sin hardware), haga clic en
+ * el botón "🎮 Demo" de la barra de herramientas.
  */
 
 #include <QApplication>
@@ -17,7 +21,7 @@
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("OBD-II Scanner Profesional");
-    app.setApplicationVersion("8.0");
+    app.setApplicationVersion("12.0");
     app.setOrganizationName("Freebuff");
 
     // Estilo Fusion oscuro profesional
@@ -46,8 +50,10 @@ int main(int argc, char* argv[]) {
     appFont.setStyleHint(QFont::Monospace);
     app.setFont(appFont);
 
+    // Mostrar ventana principal — el botón "🎮 Demo" en la barra
+    // de herramientas permite activar el modo simulado sin hardware
     MainWindow window;
-    window.setWindowTitle("OBD-II Escáner Profesional v8");
+    window.setWindowTitle("OBD-II Escáner Profesional v12");
     window.resize(1200, 800);
     window.show();
 

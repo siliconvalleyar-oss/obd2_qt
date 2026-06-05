@@ -56,7 +56,7 @@ bool GMCommands::setupGMHeader() {
 }
 
 void GMCommands::showError(const std::string& cmd, const std::string& response) {
-    std::cerr << "[ERROR] Comando " << cmd << " falló: " << response << std::endl;
+    std::cerr << "[monitor] Comando " << cmd << " falló: " << response << std::endl;
 }
 
 // ============================================================================
@@ -675,11 +675,11 @@ void GMCommands::scanGMPIDs() {
 // ============================================================================
 
 std::string GMCommands::sendCustomCommand(const std::string& cmd) {
-    std::cout << "[TX] " << cmd << std::endl;
+    std::cout << "[monitor] TX: " << cmd << std::endl;
     std::string resp = elm->send(cmd, 500);
     if (!resp.empty()) {
         auto bytes = elm->splitResponse(resp);
-        std::cout << "[RX] Bytes: ";
+        std::cout << "[monitor] RX: ";
         for (const auto& b : bytes) {
             std::cout << b << " ";
         }

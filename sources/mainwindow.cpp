@@ -22,10 +22,10 @@
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent), m_isScanning(false), m_isConnected(false),
-      m_demoMode(false), m_demoCounter(0)    , m_demoPhase(DemoPhase::Normal), m_demoPhaseCounter(0),
+      m_demoMode(false), m_demoCounter(0), m_demoPhase(DemoPhase::Normal), m_demoPhaseCounter(0),
       m_demoPhaseDuration(200), m_demoCheckEngine(false),
       m_sessMinRPM(99999), m_sessMaxRPM(0), m_sessTotalRPM(0),
-      m_sessCountRPM(0), m_sessMaxSpeed(0) {
+      m_sessCountRPM(0), m_sessMaxSpeed(0), m_tickCounter(0), m_toolbar(nullptr) {
 
     // Seed random generator for demo variety
     srand(static_cast<unsigned>(time(nullptr)));
@@ -109,7 +109,8 @@ void MainWindow::closeApplication() {
 }
 
 void MainWindow::createToolBar() {
-    QToolBar* toolbar = addToolBar("Principal");
+    m_toolbar = addToolBar("Principal");
+    QToolBar* toolbar = m_toolbar;
     toolbar->setStyleSheet(
         "QToolBar { background-color: #1E2230; border: none; border-bottom: 1px solid #2A2E3E; spacing: 8px; padding: 4px; }"
         "QToolButton { color: #DCE1F0; font-weight: bold; padding: 6px 14px; "
@@ -122,10 +123,12 @@ void MainWindow::createToolBar() {
 
     m_actConnect = toolbar->addAction(AppIcons::iconConnect(), " Conectar");
     m_actConnect->setToolTip("Conectar al ELM327 vía Bluetooth");
+    // Conectar se pondrá verde vía setProperty (se maneja en onConnect/onDisconnect)
 
     m_actDisconnect = toolbar->addAction(AppIcons::iconDisconnect(), " Desconectar");
     m_actDisconnect->setToolTip("Desconectar ELM327");
     m_actDisconnect->setEnabled(false);
+    // Desconectar se pondrá rojo vía setProperty
 
     toolbar->addSeparator();
 
@@ -228,6 +231,10 @@ void MainWindow::connectSignals() {
     connect(m_actResetSettings, &QAction::triggered, this, &MainWindow::onResetSettings);
     connect(m_actDemo, &QAction::triggered, this, &MainWindow::onDemo);
 
+    // Aplicar colores a los botones de conexión usando setProperty + stylesheet dinámico
+    // Nota: QAction no soporta setStyleSheet directamente, pero el QToolButton sí
+    // mediante el widget asociado. Se aplica el color en onConnect()/onDisconnect().
+
     // Close with Ctrl+Q
     QAction* actQuit = new QAction(this);
     actQuit->setShortcut(QKeySequence("Ctrl+Q"));
@@ -280,6 +287,24 @@ void MainWindow::onConnect() {
 
         m_actConnect->setEnabled(false);
         m_actDisconnect->setEnabled(true);
+        // Botón Conectar: verde (conectado) / Botón Desconectar: rojo
+        if (m_toolbar) {
+            if (auto* w = m_toolbar->widgetForAction(m_actConnect)) {
+                w->setStyleSheet(
+                    "QToolButton { background-color: #2D8C2D; color: white; font-weight: bold; "
+                    "padding: 6px 14px; border: none; border-radius: 4px; }"
+                );
+            }
+            if (auto* w = m_toolbar->widgetForAction(m_actDisconnect)) {
+                w->setStyleSheet(
+                    "QToolButton { background-color: #8C2D2D; color: white; font-weight: bold; "
+                    "padding: 6px 14px; border: none; border-radius: 4px; }"
+                    "QToolButton:hover { background-color: #A63A3A; }"
+                    "QToolButton:disabled { background-color: #3C4158; color: #6A6F80; }"
+                );
+            }
+        }
+
         m_actStartScan->setEnabled(true);
         m_actExport->setEnabled(true);
         m_actReport->setEnabled(true);
@@ -288,6 +313,9 @@ void MainWindow::onConnect() {
         m_sensorPanel->setELM(m_elm.get());
         m_connectionPanel->setELM(m_elm.get());
         m_dtcPanel->setELM(m_elm.get());
+
+        // Actualizar panel de conexión con estado
+        m_connectionPanel->updateStatus(true, QString::fromStdString(m_elm->getProtocol()));
 
         m_pollTimer->start();
 
@@ -328,6 +356,9 @@ void MainWindow::onDisconnect() {
         m_gm.reset();
     }
     m_isConnected = false;
+
+    // Actualizar panel de conexión
+    m_connectionPanel->updateStatus(false);
     m_isScanning = false;
     m_demoMode = false;
 
@@ -348,6 +379,15 @@ void MainWindow::onDisconnect() {
     m_sessMaxSpeed = 0;
 
     m_actConnect->setEnabled(true);
+    // Restaurar estilo de los botones (vuelve a heredar del toolbar)
+    if (m_toolbar) {
+        if (auto* w = m_toolbar->widgetForAction(m_actConnect)) {
+            w->setStyleSheet("");
+        }
+        if (auto* w = m_toolbar->widgetForAction(m_actDisconnect)) {
+            w->setStyleSheet("");
+        }
+    }
     m_actDisconnect->setEnabled(false);
     m_actStartScan->setEnabled(false);
     m_actStopScan->setEnabled(false);
@@ -626,6 +666,9 @@ void MainWindow::onTimerTick() {
         // Update dashboard
         m_dashboard->updateData(d);
 
+        // Update O2 and fuel trim displays in demo mode
+        m_dashboard->updateO2AndTrims(o2v, stft, ltft);
+
         // Update sensor panel with demo data
         m_sensorPanel->feedDemoData(d, o2v, stft, ltft);
 
@@ -675,22 +718,32 @@ void MainWindow::onTimerTick() {
         }
     }
 
+    // Fetch O2 and fuel trim data only every 3rd tick (~4.5s) to avoid slowing down
+    double o2v = -1;
+    double stft = 0, ltft = 0;
+    bool fetchExtra = (m_tickCounter % 3 == 0);
+    m_tickCounter++;
+
+    if (fetchExtra) {
+        if (m_elm && m_elm->isConnected()) {
+            auto o2 = m_elm->getO2Sensor(1, 1);
+            if (o2.voltage >= 0) {
+                o2v = o2.voltage;
+            }
+            stft = m_elm->getShortTermTrimBank1();
+            ltft = m_elm->getLongTermTrimBank1();
+        }
+
+        // Update dashboard O2/trim displays (separate from main bars)
+        if (m_tabs->currentIndex() == 0 && d.valid) {
+            m_dashboard->updateO2AndTrims(o2v, stft, ltft);
+        }
+    }
+
     // Feed data to HistoryPanel (only reads extra OBD when recording)
     if (rpm >= 0) {
-        double o2v = -1;
-        double stft = 0, ltft = 0;
-
-        // Only fetch expensive OBD-II data when actually recording
-        if (m_historyPanel->isRecording()) {
-            FuelTrim ft = m_elm->getAllFuelTrims();
-            if (ft.available) {
-                stft = ft.shortTermBank1;
-                ltft = ft.longTermBank1;
-            }
-            std::vector<OxygenSensor> o2sensors = m_elm->getOxygenSensors();
-            if (!o2sensors.empty() && o2sensors[0].voltage >= 0) {
-                o2v = o2sensors[0].voltage;
-            }
+        if (m_historyPanel->isRecording() && fetchExtra) {
+            // Use data already fetched above
         }
 
         m_historyPanel->addDataPoint(
