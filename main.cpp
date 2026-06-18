@@ -11,10 +11,13 @@
  */
 
 #include <QApplication>
+#include <QSplashScreen>
+#include <QPixmap>
 #include <QStyleFactory>
 #include <QPalette>
 #include <QFont>
 #include <QDebug>
+#include <QTimer>
 
 #include "headers/mainwindow.hpp"
 
@@ -23,6 +26,12 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("OBD-II Scanner Profesional");
     app.setApplicationVersion("12.0");
     app.setOrganizationName("Freebuff");
+
+    // Splash screen con logo
+    QPixmap splashPix(":/logo");
+    QSplashScreen splash(splashPix.scaled(420, 420, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    splash.show();
+    app.processEvents();
 
     // Estilo Fusion oscuro profesional
     app.setStyle(QStyleFactory::create("Fusion"));
@@ -50,12 +59,16 @@ int main(int argc, char* argv[]) {
     appFont.setStyleHint(QFont::Monospace);
     app.setFont(appFont);
 
-    // Mostrar ventana principal — el botón "🎮 Demo" en la barra
-    // de herramientas permite activar el modo simulado sin hardware
+    // Crear ventana principal
     MainWindow window;
     window.setWindowTitle("OBD-II Escáner Profesional v12");
     window.resize(1200, 800);
-    window.show();
+
+    // Cerrar splash y mostrar ventana tras 1.5s
+    QTimer::singleShot(1500, [&]() {
+        splash.close();
+        window.show();
+    });
 
     return app.exec();
 }

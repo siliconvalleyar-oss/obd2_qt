@@ -39,8 +39,8 @@ HEADERS += \
     headers/logger.hpp \
     headers/app_icons.hpp
 
-# Resources (none yet)
-# RESOURCES +=
+# Resources
+RESOURCES += resources.qrc
 
 # Release optimizations
 QMAKE_CXXFLAGS_RELEASE += -O2
