@@ -67,13 +67,6 @@ static const std::vector<DTCCode> s_dtcDatabase = {
     {"P2271", "Sensor O2 señal rica B1S2"},
 };
 
-static DTCCode lookupDTC(const std::string& code) {
-    for (const auto& dtc : s_dtcDatabase) {
-        if (dtc.code == code) return dtc;
-    }
-    return {code, "Código no encontrado en base local"};
-}
-
 // ============================================================================
 // DtcPanel implementation
 // ============================================================================

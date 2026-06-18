@@ -347,8 +347,6 @@ private:
     int m_protocol;                 ///< Protocolo OBD cacheado (-1 = desconocido)
     bool m_configValid;             ///< true si la configuración AT está aplicada
 
-    std::string readRaw();
-    std::string parseResponse(const std::string& response, const std::string& expected);
     std::string decodeDTCCode(const std::string& code);
 
     /**

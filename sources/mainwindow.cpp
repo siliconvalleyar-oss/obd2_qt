@@ -742,10 +742,6 @@ void MainWindow::onTimerTick() {
 
     // Feed data to HistoryPanel (only reads extra OBD when recording)
     if (rpm >= 0) {
-        if (m_historyPanel->isRecording() && fetchExtra) {
-            // Use data already fetched above
-        }
-
         m_historyPanel->addDataPoint(
             d.valid ? static_cast<double>(d.rpm) : static_cast<double>(rpm),
             d.valid ? static_cast<double>(d.speed) : static_cast<double>(speed),
@@ -800,11 +796,6 @@ void MainWindow::onDemo() {
 
         m_actDemo->setIcon(AppIcons::iconDemo(true));
 
-        {
-            QSettings s("Freebuff", "OBD2-Scanner");
-            s.setValue("demo/enabled", true);
-        }
-
         // Set demo vehicle info in DtcPanel
         m_dtcPanel->setELM(nullptr);
         m_dtcPanel->setDemoVehicleInfo();
@@ -832,10 +823,6 @@ void MainWindow::onDemo() {
         m_actStartScan->setEnabled(false);
         m_actStopScan->setEnabled(false);        m_actExport->setEnabled(false);
         m_actReport->setEnabled(false);
-        {
-            QSettings s("Freebuff", "OBD2-Scanner");
-            s.setValue("demo/enabled", false);
-        }
         m_actDemo->setIcon(AppIcons::iconDemo(false));
 
         appendLog("🎮 Demo desactivado", QColor(255, 180, 40));
@@ -1332,13 +1319,6 @@ void MainWindow::loadSettings() {
     int tabIdx = settings.value("window/activeTab", 0).toInt();
     if (tabIdx >= 0 && tabIdx < m_tabs->count()) {
         m_tabs->setCurrentIndex(tabIdx);
-    }
-
-    // Restore demo mode (must be last to avoid UI conflicts)
-    bool demoEnabled = settings.value("demo/enabled", false).toBool();
-    if (demoEnabled) {
-        m_actDemo->setChecked(true);
-        onDemo();
     }
 
     appendLog("⚙ Configuración persistente cargada", QColor(140, 145, 160));

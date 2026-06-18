@@ -612,7 +612,7 @@ void HistoryPanel::exportHTML() {
     QPixmap chartPixmap = m_chartView->grab();
 
     QString pngPath = baseName;
-    pngPath.replace(QRegularExpression("\.html$", QRegularExpression::CaseInsensitiveOption), ".png");
+    pngPath.replace(QRegularExpression("\\.html$", QRegularExpression::CaseInsensitiveOption), ".png");
     if (!chartPixmap.save(pngPath, "PNG")) {
         QMessageBox::warning(this, "Error", "No se pudo guardar la imagen del gráfico:\n" + pngPath);
         return;

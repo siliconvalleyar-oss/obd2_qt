@@ -59,10 +59,6 @@ ELM327::~ELM327()
     disconnect();
 }
 
-//bool ELM327::isConnected() {
-//    return sock >= 0;
-//}
-
 bool ELM327::connectBT()
 {
     // Liberar puerto Bluetooth antes de conectar
@@ -158,10 +154,15 @@ bool ELM327::connectBT()
 #endif
 
     // Inicializar ELM327 (común a ambas plataformas)
-    send("ATZ", 1000);
+    send("ATZ", 2000);
     send("ATE0");
     send("ATL0");
     send("ATS0");
+    send("ATH0");
+    // Flush residual buffer after ATZ
+    for (int flush = 0; flush < 3; flush++) {
+        send("\r", 100);
+    }
     // Usar protocolo cacheado si está disponible (evita ATSP0 ~2-3s)
     loadCachedProtocol();
     if (m_protocol > 0) {
@@ -173,8 +174,10 @@ bool ELM327::connectBT()
     send("ATAT1");
     send("ATST10");
     send("ATAL1");  // Allow long CAN messages (multi-frame)
-    send("ATCF 7E8", 50); // CAN filter: solo ECU (0x7E8)
-    send("ATCM 7FF", 50); // CAN mask: coincidencia exacta 11 bits
+    if (m_protocol >= 6 && m_protocol <= 9) {
+        send("ATCF 7E8", 50);
+        send("ATCM 7FF", 50);
+    }
 
     // Detectar y cachear protocolo para futuras conexiones rápidas
     if (m_protocol <= 0) {
@@ -202,38 +205,6 @@ void ELM327::disconnect()
         sock = -1;
     }
 #endif
-}
-
-std::string ELM327::readRaw()
-{
-    if (!isConnected()) return "";
-    
-    char buffer[4096];
-#ifdef Q_OS_WIN
-    DWORD read;
-    if (ReadFile(m_hCom, buffer, sizeof(buffer)-1, &read, NULL) && read > 0)
-    {
-        buffer[read] = 0;
-        std::string result(buffer);
-        result.erase(std::remove(result.begin(), result.end(), '\r'), result.end());
-        result.erase(std::remove(result.begin(), result.end(), '\n'), result.end());
-        result.erase(std::remove(result.begin(), result.end(), ' '), result.end());
-        return result;
-    }
-#else
-    int n = read(sock, buffer, sizeof(buffer)-1);
-    if (n > 0)
-    {
-        buffer[n] = 0;
-        std::string result(buffer);
-        result.erase(std::remove(result.begin(), result.end(), '\r'), result.end());
-        result.erase(std::remove(result.begin(), result.end(), '\n'), result.end());
-        result.erase(std::remove(result.begin(), result.end(), ' '), result.end());
-        return result;
-    }
-#endif
-
-    return "";
 }
 
 // sendRaw - Envío con select() timeout (usado por modo 22)
@@ -2013,9 +1984,9 @@ ELM327::DashboardData ELM327::getDashboardFast() {
     // acelerar la lectura del dashboard (~3s vs ~5s anteriormente).
     // Timeout de cada comando reducido de 300ms a 200ms.
     
-    // RPM (010C) - 2 bytes: (A*256+B)/4
+    // Leer cada PID individualmente con pausas generosas para evitar STOPPED
     {
-        std::string r = send("010C", 200);
+        std::string r = send("010C", 300);
         auto b = splitResponse(r);
         if (b.size() >= 4) {
             try {
@@ -2025,81 +1996,73 @@ ELM327::DashboardData ELM327::getDashboardFast() {
             } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Speed (010D) - 1 byte
     {
-        std::string r = send("010D", 200);
+        std::string r = send("010D", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.speed = std::stoi(b[2], nullptr, 16); } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Coolant temp (0105) - 1 byte: A-40
     {
-        std::string r = send("0105", 200);
+        std::string r = send("0105", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.coolant = std::stoi(b[2], nullptr, 16) - 40; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Engine load (0104) - 1 byte: A*100/255
     {
-        std::string r = send("0104", 200);
+        std::string r = send("0104", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.load = (std::stoi(b[2], nullptr, 16) * 100) / 255; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Throttle (0111) - 1 byte: A*100/255
     {
-        std::string r = send("0111", 200);
+        std::string r = send("0111", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.throttle = (std::stoi(b[2], nullptr, 16) * 100.0) / 255.0; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Intake pressure (010B) - 1 byte
     {
-        std::string r = send("010B", 200);
+        std::string r = send("010B", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.intakePressure = std::stoi(b[2], nullptr, 16); } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Intake temp (010F) - 1 byte: A-40
     {
-        std::string r = send("010F", 200);
+        std::string r = send("010F", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.intakeTemp = std::stoi(b[2], nullptr, 16) - 40; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Timing advance (010E) - 1 byte: A/2 - 64
     {
-        std::string r = send("010E", 200);
+        std::string r = send("010E", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.timing = (std::stoi(b[2], nullptr, 16) / 2.0) - 64; } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // MAF (0110) - 2 bytes: (A*256+B)/100
     {
-        std::string r = send("0110", 200);
+        std::string r = send("0110", 300);
         auto b = splitResponse(r);
         if (b.size() >= 4) {
             try {
@@ -2109,11 +2072,10 @@ ELM327::DashboardData ELM327::getDashboardFast() {
             } catch (...) {}
         }
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
-    // Fuel level (012F) - 1 byte: A*100/255
     {
-        std::string r = send("012F", 200);
+        std::string r = send("012F", 300);
         auto b = splitResponse(r);
         if (b.size() >= 3) {
             try { d.fuelLevel = (std::stoi(b[2], nullptr, 16) * 100.0) / 255.0; } catch (...) {}
@@ -2291,22 +2253,25 @@ bool ELM327::recoverFromStopped() {
 #endif
     
     // 5. Reconfigurar completamente (ATSP0 re-detecta protocolo CAN)
-    send("ATE0", 150);   // Echo OFF
-    send("ATH0", 150);   // Headers OFF
-    send("ATS0", 150);   // Spaces OFF
-    send("ATL0", 150);   // Linefeeds OFF
+    send("\r", 100);
+    send("ATE0", 150);
+    send("ATH0", 150);
+    send("ATS0", 150);
+    send("ATL0", 150);
     if (m_protocol > 0) {
         send("ATSP" + std::to_string(m_protocol), 500);
         std::cout << "[monitor] Re-aplicando protocolo cacheado: ATSP" << m_protocol << std::endl;
     } else {
-        send("ATSP0", 500);  // Protocolo automático
+        send("ATSP0", 500);
     }
-    send("ATAT1", 100);  // Adaptive timing mínimo
-    send("ATST10", 100); // Timeout 40ms
-    send("ATAL1", 50);   // Allow long CAN messages
-    send("ATCF 7E8", 50); // CAN filter: solo ECU (0x7E8)
-    send("ATCM 7FF", 50); // CAN mask: coincidencia exacta 11 bits
-    
+    send("ATAT1", 100);
+    send("ATST10", 100);
+    send("ATAL1", 50);
+    if (m_protocol >= 6 && m_protocol <= 9) {
+        send("ATCF 7E8", 50);
+        send("ATCM 7FF", 50);
+    }
+
     m_configValid = true;
     std::cout << "[monitor] ELM327 recuperado correctamente\n";
     return true;
@@ -2314,15 +2279,17 @@ bool ELM327::recoverFromStopped() {
 
 void ELM327::ensureNormalConfig() {
     m_configValid = true;
-    send("ATE0", 150);  // Echo OFF
-    send("ATH0", 150);  // Headers OFF
-    send("ATS0", 150);  // Spaces OFF
-    send("ATL0", 150);  // Linefeeds OFF
-    send("ATAT1", 100); // Adaptive timing mínimo
-    send("ATST10", 100);// Timeout 40ms
-    send("ATAL1", 50);  // Allow long CAN messages
-    send("ATCF 7E8", 50);// CAN filter: solo ECU (0x7E8)
-    send("ATCM 7FF", 50);// CAN mask: coincidencia exacta 11 bits
+    send("ATE0", 150);
+    send("ATH0", 150);
+    send("ATS0", 150);
+    send("ATL0", 150);
+    send("ATAT1", 100);
+    send("ATST10", 100);
+    send("ATAL1", 50);
+    if (m_protocol >= 6 && m_protocol <= 9) {
+        send("ATCF 7E8", 50);
+        send("ATCM 7FF", 50);
+    }
 }
 
 // ============================================================================

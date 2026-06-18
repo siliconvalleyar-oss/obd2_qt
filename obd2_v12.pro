@@ -36,10 +36,11 @@ HEADERS += \
     headers/historypanel.hpp \
     headers/elm327.hpp \
     headers/gm_commands.hpp \
-    headers/logger.hpp
+    headers/logger.hpp \
+    headers/app_icons.hpp
 
-# Resources
-RESOURCES +=
+# Resources (none yet)
+# RESOURCES +=
 
 # Release optimizations
 QMAKE_CXXFLAGS_RELEASE += -O2
